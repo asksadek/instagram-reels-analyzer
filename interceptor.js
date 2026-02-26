@@ -1,10 +1,11 @@
-// Instagram Reels Analyzer — MAIN World Interceptor v5
+// Instagram Reels Analyzer — MAIN World Interceptor v6
 
 (function() {
   'use strict';
 
   const CHANNEL = 'IG_REELS_ANALYZER';
   let totalSent = 0;
+  let interceptedUrls = 0;
 
   // Instagram PK encodes timestamp: (pk >> 23) / 1000 + epoch
   const IG_EPOCH = 1314220021;
@@ -45,7 +46,6 @@
     return 0;
   }
 
-  // Extract caption text from an object (checks multiple field patterns)
   function extractCaption(obj) {
     if (!obj || typeof obj !== 'object') return '';
     if (obj.edge_media_to_caption?.edges?.[0]?.node?.text) return obj.edge_media_to_caption.edges[0].node.text;
@@ -57,7 +57,6 @@
     return '';
   }
 
-  // Extract owner username from an object
   function extractOwner(obj) {
     if (!obj || typeof obj !== 'object') return '';
     if (obj.user?.username) return obj.user.username.toLowerCase();
@@ -76,9 +75,7 @@
     const likes = obj.edge_media_preview_like?.count ?? obj.edge_liked_by?.count ?? obj.like_count ?? 0;
     const comments = obj.edge_media_to_comment?.count ?? obj.edge_media_to_parent_comment?.count ?? obj.comment_count ?? 0;
 
-    // Caption: try from this object first, fallback to parent context
     const caption = extractCaption(obj) || ctx.caption || '';
-    // Owner: try from this object first, fallback to parent context
     const owner = extractOwner(obj) || ctx.owner || '';
 
     return {
@@ -101,12 +98,10 @@
     const posts = [];
     const seen = new Set();
     const profileUsername = getCurrentProfileUsername();
-    let debuggedCaption = false;
 
     function traverse(obj, depth, ctx) {
       if (!obj || typeof obj !== 'object' || depth > 25) return;
 
-      // Build context: collect caption & owner from this level to pass to children
       const childCtx = { caption: ctx.caption, owner: ctx.owner };
       const captionHere = extractCaption(obj);
       if (captionHere) childCtx.caption = captionHere;
@@ -115,17 +110,10 @@
 
       const post = normalizePost(obj, childCtx);
       if (post && !seen.has(post.shortcode)) {
-        // Filter: only accept posts from the current profile (if on a profile page)
-        const belongsToProfile = !profileUsername || post.owner === profileUsername;
+        const belongsToProfile = !profileUsername || !post.owner || post.owner === profileUsername;
         if (belongsToProfile) {
           seen.add(post.shortcode);
           posts.push(post);
-
-          // Debug: log first post with no caption to help diagnose
-          if (!post.caption && !debuggedCaption) {
-            debuggedCaption = true;
-            console.log('[IG Analyzer] ⚠ Post sem legenda — keys:', Object.keys(obj).join(','));
-          }
         }
       }
 
@@ -148,7 +136,7 @@
     totalSent += posts.length;
     const sample = posts[0];
     const captionPreview = sample.caption ? sample.caption.slice(0, 50) : '(sem legenda)';
-    console.log(`[IG Analyzer] ✓ ${posts.length} posts (total: ${totalSent}) owner=${sample.owner} caption="${captionPreview}" views=${sample.views}`);
+    console.log(`[IG Analyzer] ✓ ${posts.length} posts (total: ${totalSent}) src=${source} owner=${sample.owner} views=${sample.views} caption="${captionPreview}"`);
     window.postMessage({ channel: CHANNEL, type: 'POSTS_DATA', posts }, '*');
   }
 
@@ -167,11 +155,12 @@
     return '';
   }
 
+  // Skip obvious non-API URLs (media, assets, CDN)
   function shouldIntercept(url) {
     if (!url) return false;
-    return url.includes('graphql') || url.includes('/api/') || url.includes('query') ||
-           url.includes('feed') || url.includes('clips') || url.includes('reels') ||
-           url.includes('media') || url.includes('user');
+    if (/\.(jpg|jpeg|png|gif|webp|mp4|m4a|m3u8|css|woff2?|ttf|svg|ico)(\?|$)/i.test(url)) return false;
+    if (url.includes('cdninstagram.com/v/') || url.includes('scontent')) return false;
+    return true;
   }
 
   const origFetch = window.fetch;
@@ -180,8 +169,9 @@
     const response = await origFetch.apply(this, arguments);
     try {
       if (shouldIntercept(url)) {
+        interceptedUrls++;
         const clone = response.clone();
-        clone.text().then(text => tryParse(text, url)).catch(() => {});
+        clone.text().then(text => tryParse(text, 'fetch')).catch(() => {});
       }
     } catch(e) {}
     return response;
@@ -200,11 +190,88 @@
     const url = this._igUrl;
     if (shouldIntercept(url)) {
       this.addEventListener('load', function() {
-        try { tryParse(this.responseText, url); } catch(e) {}
+        try { tryParse(this.responseText, 'xhr'); } catch(e) {}
       });
     }
     return origSend.apply(this, arguments);
   };
 
-  console.log('[IG Analyzer] ✓ Interceptor v5 — caption context + profile filter');
+  // === Scan page for embedded/SSR data ===
+  function scanPageData() {
+    console.log('[IG Analyzer] Scanning page for embedded data...');
+    let found = 0;
+
+    // 1. Script tags with JSON data (Relay payloads)
+    document.querySelectorAll('script[type="application/json"]').forEach(s => {
+      try {
+        const data = JSON.parse(s.textContent);
+        const posts = extractPosts(data);
+        if (posts.length > 0) { relay(posts, 'ssr-json'); found += posts.length; }
+      } catch(e) {}
+    });
+
+    // 2. Script tags that contain JSON-like data (data-sjs, data-content-len)
+    document.querySelectorAll('script[data-sjs]').forEach(s => {
+      try {
+        const data = JSON.parse(s.textContent);
+        const posts = extractPosts(data);
+        if (posts.length > 0) { relay(posts, 'ssr-sjs'); found += posts.length; }
+      } catch(e) {}
+    });
+
+    // 3. Common Instagram global variables
+    const globals = [
+      '_sharedData', '__additionalDataLoaded', '__initialData',
+      '__relay_store'
+    ];
+    for (const g of globals) {
+      try {
+        if (window[g]) {
+          const posts = extractPosts(window[g]);
+          if (posts.length > 0) { relay(posts, `global:${g}`); found += posts.length; }
+        }
+      } catch(e) {}
+    }
+
+    // 4. Look for require("ScheduledServerJS").handle calls in inline scripts
+    document.querySelectorAll('script:not([src])').forEach(s => {
+      const text = s.textContent;
+      if (!text || text.length < 100 || text.length > 5000000) return;
+      // Find JSON blobs that look like they contain media data
+      const matches = text.match(/\{"(?:shortcode|code|media|clips|edge_)[^}]{50,}/g);
+      if (matches) {
+        for (const m of matches) {
+          // Try to find a complete JSON object
+          try {
+            // Find the matching closing brace
+            const startIdx = text.indexOf(m);
+            let braceCount = 0;
+            let endIdx = startIdx;
+            for (let i = startIdx; i < text.length && i < startIdx + 500000; i++) {
+              if (text[i] === '{') braceCount++;
+              if (text[i] === '}') braceCount--;
+              if (braceCount === 0) { endIdx = i + 1; break; }
+            }
+            if (endIdx > startIdx) {
+              const jsonStr = text.slice(startIdx, endIdx);
+              const data = JSON.parse(jsonStr);
+              const posts = extractPosts(data);
+              if (posts.length > 0) { relay(posts, 'ssr-inline'); found += posts.length; }
+            }
+          } catch(e) {}
+        }
+      }
+    });
+
+    console.log(`[IG Analyzer] Page scan complete: ${found} posts found, ${interceptedUrls} URLs intercepted`);
+  }
+
+  // Run page scan after DOM is ready
+  if (document.readyState === 'complete') {
+    setTimeout(scanPageData, 500);
+  } else {
+    window.addEventListener('load', () => setTimeout(scanPageData, 500));
+  }
+
+  console.log('[IG Analyzer] ✓ Interceptor v6 — broadened intercept + page scan');
 })();

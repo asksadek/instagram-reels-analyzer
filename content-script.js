@@ -50,6 +50,9 @@
 
     console.log(`[IG Analyzer CS] Starting scroll on ${window.location.pathname}`);
 
+    // Scroll immediately (don't wait for first interval tick)
+    window.scrollBy({ top: window.innerHeight * 2, behavior: 'smooth' });
+
     scrollInterval = setInterval(() => {
       if (!scrolling) return;
 
