@@ -1,4 +1,4 @@
-// Instagram Reels Analyzer — MAIN World Interceptor v6
+// Instagram Reels Analyzer — MAIN World Interceptor v7
 
 (function() {
   'use strict';
@@ -6,9 +6,13 @@
   const CHANNEL = 'IG_REELS_ANALYZER';
   let totalSent = 0;
   let interceptedUrls = 0;
+  let captionsFetched = false;
+  let firstUserPk = null;
 
   // Instagram PK encodes timestamp: (pk >> 23) / 1000 + epoch
   const IG_EPOCH = 1314220021;
+  const IG_APP_ID = '936619743392459';
+  const origFetch = window.fetch;
 
   // Reserved Instagram paths (not profile usernames)
   const RESERVED_PATHS = new Set([
@@ -25,6 +29,60 @@
       if (!RESERVED_PATHS.has(name)) return name;
     }
     return null;
+  }
+
+  // === Caption fetch: one request to get captions for all posts ===
+  function getCsrfToken() {
+    const match = document.cookie.match(/csrftoken=([^;]+)/);
+    return match ? match[1] : '';
+  }
+
+  function fetchCaptionsOnce(userPk) {
+    if (captionsFetched) return;
+    captionsFetched = true;
+    console.log(`[IG Analyzer] Fetching captions via feed API for user PK ${userPk}...`);
+
+    const feedUrl = `https://www.instagram.com/api/v1/feed/user/${userPk}/?count=50`;
+    // Use origFetch so we don't intercept our own request in the override
+    // Instead, we parse the response directly here
+    origFetch(feedUrl, {
+      credentials: 'include',
+      headers: {
+        'X-CSRFToken': getCsrfToken(),
+        'X-IG-App-ID': IG_APP_ID,
+        'X-Requested-With': 'XMLHttpRequest'
+      }
+    }).then(r => r.text()).then(text => {
+      try {
+        const data = JSON.parse(text);
+        const posts = extractPosts(data);
+        if (posts.length > 0) {
+          console.log(`[IG Analyzer] ✓ Caption fetch: ${posts.length} posts with captions`);
+          relay(posts, 'caption-fetch');
+        } else {
+          console.log('[IG Analyzer] Caption fetch: no posts extracted, trying next page...');
+        }
+
+        // Also fetch next page if available (for profiles with many posts)
+        if (data.next_max_id) {
+          origFetch(`${feedUrl}&max_id=${data.next_max_id}`, {
+            credentials: 'include',
+            headers: {
+              'X-CSRFToken': getCsrfToken(),
+              'X-IG-App-ID': IG_APP_ID,
+              'X-Requested-With': 'XMLHttpRequest'
+            }
+          }).then(r2 => r2.text()).then(text2 => {
+            tryParse(text2, 'caption-fetch-p2');
+          }).catch(e => console.warn('[IG Analyzer] Caption fetch page 2 failed:', e));
+        }
+      } catch(e) {
+        console.warn('[IG Analyzer] Caption fetch parse error:', e);
+      }
+    }).catch(e => {
+      console.warn('[IG Analyzer] Caption fetch failed:', e);
+      captionsFetched = false; // Allow retry
+    });
   }
 
   function timestampFromPk(pk) {
@@ -109,17 +167,13 @@
       const ownerHere = extractOwner(obj);
       if (ownerHere) childCtx.owner = ownerHere;
 
+      // Capture first user PK for caption fetch
+      if (!firstUserPk && obj.user?.pk) {
+        firstUserPk = String(obj.user.pk);
+      }
+
       const post = normalizePost(obj, childCtx);
       if (post && !seen.has(post.shortcode)) {
-        // Debug: log structure info for first captionless post
-        if (!post.caption && !debugged) {
-          debugged = true;
-          console.log('[IG Analyzer] DEBUG captionless post:');
-          console.log('  keys:', Object.keys(obj).sort().join(', '));
-          console.log('  obj.caption:', JSON.stringify(obj.caption)?.slice(0, 200));
-          console.log('  obj.user:', JSON.stringify(obj.user)?.slice(0, 200));
-          console.log('  ctx.caption:', childCtx.caption?.slice(0, 100) || '(empty)');
-        }
         const belongsToProfile = !profileUsername || !post.owner || post.owner === profileUsername;
         if (belongsToProfile) {
           seen.add(post.shortcode);
@@ -154,7 +208,13 @@
     try {
       const data = JSON.parse(text);
       const posts = extractPosts(data);
-      if (posts.length > 0) relay(posts, source);
+      if (posts.length > 0) {
+        relay(posts, source);
+        // Trigger caption fetch after first batch of posts with a user PK
+        if (firstUserPk && !captionsFetched) {
+          fetchCaptionsOnce(firstUserPk);
+        }
+      }
     } catch(e) {}
   }
 
@@ -173,7 +233,6 @@
     return true;
   }
 
-  const origFetch = window.fetch;
   window.fetch = async function(input, init) {
     const url = getUrl(input);
     const response = await origFetch.apply(this, arguments);
@@ -283,5 +342,5 @@
     window.addEventListener('load', () => setTimeout(scanPageData, 500));
   }
 
-  console.log('[IG Analyzer] ✓ Interceptor v6 — broadened intercept + page scan');
+  console.log('[IG Analyzer] ✓ Interceptor v7 — caption fetch via feed API');
 })();
