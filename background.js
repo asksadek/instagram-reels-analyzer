@@ -31,6 +31,9 @@ let collectedPosts = {};
 // Tabs pending scroll after navigation
 const pendingScrollTabs = new Set();
 
+// Tabs doing two-step collection (profile root for captions → reels for views)
+const pendingReelsNav = new Map(); // tabId → username
+
 // Reserved Instagram paths (not profile usernames)
 const RESERVED_PATHS = new Set([
   'reels', 'explore', 'direct', 'stories', 'accounts', 'p', 'reel',
@@ -51,7 +54,7 @@ function mergePost(existing, incoming) {
   }
 }
 
-// Navigate tab to reels page if needed, then start scroll
+// Two-step collection: profile root (captions) → reels (views + scroll)
 function startScrollOnTab(tabId) {
   chrome.tabs.get(tabId, (tab) => {
     if (chrome.runtime.lastError || !tab || !tab.url) {
@@ -63,52 +66,70 @@ function startScrollOnTab(tabId) {
       const url = new URL(tab.url);
       const path = url.pathname;
 
-      // Already on reels page — start scrolling directly
-      if (path.match(/^\/[^/]+\/reels\/?$/)) {
-        console.log(`[IG Analyzer BG] Already on reels, sending START_SCROLL to tab ${tabId}`);
-        chrome.tabs.sendMessage(tabId, { type: 'START_SCROLL' }).catch(err => {
-          console.error(`[IG Analyzer BG] Failed to send START_SCROLL:`, err);
-        });
-        return;
-      }
-
-      // On a profile page — navigate to reels first
       const profileMatch = path.match(/^\/([^/]+)/);
-      if (profileMatch && !RESERVED_PATHS.has(profileMatch[1].toLowerCase())) {
-        const username = profileMatch[1];
-        const reelsUrl = `https://www.instagram.com/${username}/reels/`;
-        console.log(`[IG Analyzer BG] Navigating tab ${tabId} to ${reelsUrl}`);
-        pendingScrollTabs.add(tabId);
-        chrome.tabs.update(tabId, { url: reelsUrl });
-        // SCROLL_STATUS navigating
-        chrome.runtime.sendMessage({
-          type: 'SCROLL_STATUS',
-          status: 'collecting',
-          count: 0,
-          message: 'Navegando para Reels...'
-        }).catch(() => {});
+      if (!profileMatch || RESERVED_PATHS.has(profileMatch[1].toLowerCase())) {
+        // Not on a profile page — just scroll wherever we are
+        chrome.tabs.sendMessage(tabId, { type: 'START_SCROLL' }).catch(() => {});
         return;
       }
 
-      // Fallback: just try to scroll wherever we are
-      chrome.tabs.sendMessage(tabId, { type: 'START_SCROLL' }).catch(err => {
-        console.error(`[IG Analyzer BG] Failed to send START_SCROLL:`, err);
-      });
+      const username = profileMatch[1];
+      const isProfileRoot = /^\/[^/]+\/?$/.test(path);
+
+      // Notify sidepanel
+      chrome.runtime.sendMessage({
+        type: 'SCROLL_STATUS', status: 'collecting', count: 0
+      }).catch(() => {});
+
+      if (isProfileRoot) {
+        // Already on profile root — caption data is loading
+        // Wait for it, then navigate to reels
+        console.log(`[IG Analyzer BG] Step 1: On profile root, capturing captions...`);
+        pendingReelsNav.set(tabId, username);
+        setTimeout(() => {
+          if (pendingReelsNav.has(tabId)) {
+            pendingReelsNav.delete(tabId);
+            console.log(`[IG Analyzer BG] Step 2: Navigating to reels...`);
+            pendingScrollTabs.add(tabId);
+            chrome.tabs.update(tabId, { url: `https://www.instagram.com/${username}/reels/` });
+          }
+        }, 2500);
+      } else {
+        // On reels or other subpage — navigate to profile root first for captions
+        console.log(`[IG Analyzer BG] Step 1: Navigating to profile root for captions...`);
+        pendingReelsNav.set(tabId, username);
+        chrome.tabs.update(tabId, { url: `https://www.instagram.com/${username}/` });
+      }
     } catch (e) {
       console.error('[IG Analyzer BG] Error in startScrollOnTab:', e);
     }
   });
 }
 
-// Wait for tab to finish loading after navigation, then start scroll
+// Handle navigation completions for the two-step flow
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (pendingScrollTabs.has(tabId) && changeInfo.status === 'complete') {
+  if (changeInfo.status !== 'complete') return;
+
+  // Step 1→2: Profile root loaded → navigate to reels after capturing caption data
+  if (pendingReelsNav.has(tabId)) {
+    const username = pendingReelsNav.get(tabId);
+    pendingReelsNav.delete(tabId);
+    console.log(`[IG Analyzer BG] Profile loaded, waiting for caption data...`);
+    setTimeout(() => {
+      console.log(`[IG Analyzer BG] Step 2: Navigating to reels...`);
+      pendingScrollTabs.add(tabId);
+      chrome.tabs.update(tabId, { url: `https://www.instagram.com/${username}/reels/` });
+    }, 2500);
+    return;
+  }
+
+  // Step 2→3: Reels page loaded → start scrolling
+  if (pendingScrollTabs.has(tabId)) {
     pendingScrollTabs.delete(tabId);
-    console.log(`[IG Analyzer BG] Tab ${tabId} loaded after nav, sending START_SCROLL in 1.5s`);
-    // Delay to ensure content script is injected and ready
+    console.log(`[IG Analyzer BG] Reels loaded, starting scroll in 1.5s...`);
     setTimeout(() => {
       chrome.tabs.sendMessage(tabId, { type: 'START_SCROLL' }).catch(err => {
-        console.error(`[IG Analyzer BG] Failed to send START_SCROLL after nav:`, err);
+        console.error(`[IG Analyzer BG] Failed to send START_SCROLL:`, err);
       });
     }, 1500);
   }
@@ -163,7 +184,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   else if (msg.type === "STOP_SCROLL") {
     console.log(`[IG Analyzer BG] Forwarding STOP_SCROLL to tab ${msg.tabId}`);
-    pendingScrollTabs.delete(msg.tabId); // Cancel pending nav if any
+    pendingScrollTabs.delete(msg.tabId);
+    pendingReelsNav.delete(msg.tabId);
     chrome.tabs.sendMessage(msg.tabId, msg).catch(err => {
       console.error(`[IG Analyzer BG] Failed to send to tab:`, err);
     });
@@ -179,4 +201,5 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   delete collectedPosts[tabId];
   pendingScrollTabs.delete(tabId);
+  pendingReelsNav.delete(tabId);
 });

@@ -98,6 +98,7 @@
     const posts = [];
     const seen = new Set();
     const profileUsername = getCurrentProfileUsername();
+    let debugged = false;
 
     function traverse(obj, depth, ctx) {
       if (!obj || typeof obj !== 'object' || depth > 25) return;
@@ -110,6 +111,15 @@
 
       const post = normalizePost(obj, childCtx);
       if (post && !seen.has(post.shortcode)) {
+        // Debug: log structure info for first captionless post
+        if (!post.caption && !debugged) {
+          debugged = true;
+          console.log('[IG Analyzer] DEBUG captionless post:');
+          console.log('  keys:', Object.keys(obj).sort().join(', '));
+          console.log('  obj.caption:', JSON.stringify(obj.caption)?.slice(0, 200));
+          console.log('  obj.user:', JSON.stringify(obj.user)?.slice(0, 200));
+          console.log('  ctx.caption:', childCtx.caption?.slice(0, 100) || '(empty)');
+        }
         const belongsToProfile = !profileUsername || !post.owner || post.owner === profileUsername;
         if (belongsToProfile) {
           seen.add(post.shortcode);
