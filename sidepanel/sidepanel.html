@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IG Reels Analyzer</title>
+  <link rel="stylesheet" href="styles/variables.css">
+  <link rel="stylesheet" href="styles/base.css">
+  <link rel="stylesheet" href="styles/components.css">
+</head>
+<body>
+  <!-- Header -->
+  <div id="header-mount"></div>
+
+  <!-- Collection Controls -->
+  <div id="collection-controls-mount"></div>
+
+  <!-- Sorting Tabs -->
+  <div id="sorting-tabs-mount"></div>
+
+  <!-- Half-Life Slider -->
+  <div id="halflife-slider-mount"></div>
+
+  <!-- Filters -->
+  <div id="filters-panel-mount"></div>
+
+  <!-- Advanced Features Tabs -->
+  <div class="advanced-tabs" id="advanced-tabs">
+    <button class="advanced-tabs__tab" data-panel="none">Ranking</button>
+    <button class="advanced-tabs__tab" data-panel="trends">Tendências</button>
+    <button class="advanced-tabs__tab" data-panel="chart">Desempenho</button>
+  </div>
+
+  <!-- Trend Detector -->
+  <div id="trend-detector-mount"></div>
+
+  <!-- Performance Chart -->
+  <div id="performance-chart-mount"></div>
+
+  <!-- Results List (scrollable) -->
+  <div id="results-list-mount" class="results-list"></div>
+
+  <!-- Export Bar -->
+  <div id="export-bar-mount"></div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <!-- Scripts: Utils first, then store, then components, then bootstrap -->
+  <script src="utils/format.js"></script>
+  <script src="utils/scoring.js"></script>
+  <script src="utils/filters.js"></script>
+  <script src="utils/trends.js"></script>
+  <script src="utils/export.js"></script>
+  <script src="utils/virtual-scroll.js"></script>
+  <script src="store.js"></script>
+  <script src="../lib/chart.min.js"></script>
+  <script src="components/header.js"></script>
+  <script src="components/collection-controls.js"></script>
+  <script src="components/sorting-tabs.js"></script>
+  <script src="components/halflife-slider.js"></script>
+  <script src="components/filters-panel.js"></script>
+  <script src="components/results-list.js"></script>
+  <script src="components/post-card.js"></script>
+  <script src="components/export-bar.js"></script>
+  <script src="components/trend-detector.js"></script>
+  <script src="components/performance-chart.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
