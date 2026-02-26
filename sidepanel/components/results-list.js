@@ -54,7 +54,7 @@ const ResultsList = (() => {
       }
 
       vs = VirtualScroll.create(scrollContainer, {
-        itemHeight: 120,
+        itemHeight: 88,
         renderItem,
         overscan: 3
       });
