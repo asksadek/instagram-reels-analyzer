@@ -67,10 +67,15 @@
     noNewDataCount = 0;
     lastPostCount = 0;
 
-    // Navigate to Reels tab if available and not already on reels page
-    const reelsTab = document.querySelector('a[href*="/reels/"]');
-    if (reelsTab && !window.location.pathname.includes('/reels/')) {
-      reelsTab.click();
+    // Navigate to the profile's Reels tab if we're on a profile page
+    // Match only profile-specific reels links like /username/reels/
+    const profileMatch = window.location.pathname.match(/^\/([^/]+)\/?$/);
+    if (profileMatch) {
+      const username = profileMatch[1];
+      const reelsTab = document.querySelector(`a[href="/${username}/reels/"]`);
+      if (reelsTab) {
+        reelsTab.click();
+      }
     }
 
     // Scroll down by 2x viewport height every 1.5 seconds
