@@ -17,38 +17,11 @@
     if (event.source !== window) return;
     if (event.data?.channel !== CHANNEL) return;
 
-    console.log(`[IG Analyzer CS] Received ${event.data.type} with ${event.data.posts?.length || 0} posts from interceptor`);
-
     chrome.runtime.sendMessage(event.data).then(response => {
-      console.log(`[IG Analyzer CS] Background response:`, response);
-
-      if (response) {
-        const currentCount = response.count || 0;
-
-        // Always update scroll status if we're scrolling
-        if (scrolling) {
-          if (currentCount === lastPostCount) {
-            noNewDataCount++;
-          } else {
-            noNewDataCount = 0;
-            lastPostCount = currentCount;
-          }
-
-          chrome.runtime.sendMessage({
-            type: 'SCROLL_STATUS',
-            status: 'collecting',
-            count: currentCount,
-            noNewDataCount
-          }).catch(() => {});
-
-          if (noNewDataCount >= 8) {
-            stopScrolling('complete');
-          }
-        }
+      if (response?.count) {
+        lastPostCount = response.count;
       }
-    }).catch(err => {
-      console.error('[IG Analyzer CS] Error sending to background:', err);
-    });
+    }).catch(() => {});
   });
 
   // --- Commands from side panel ---
@@ -70,7 +43,10 @@
     noNewDataCount = 0;
     lastPostCount = 0;
 
-    console.log('[IG Analyzer CS] Starting scroll on', window.location.pathname);
+    let lastScrollHeight = 0;
+    let sameHeightCount = 0;
+    let scrollCount = 0;
+    const MAX_SCROLLS = 300;
 
     // Navigate to profile's Reels tab if on profile root
     const profileMatch = window.location.pathname.match(/^\/([^/]+)\/?$/);
@@ -85,8 +61,40 @@
 
     scrollInterval = setInterval(() => {
       if (!scrolling) return;
+
+      scrollCount++;
+      const currentHeight = document.documentElement.scrollHeight;
+
+      // Check if page height changed (new content loaded)
+      if (currentHeight === lastScrollHeight) {
+        sameHeightCount++;
+      } else {
+        sameHeightCount = 0;
+        lastScrollHeight = currentHeight;
+      }
+
+      // Auto-stop conditions
+      if (sameHeightCount >= 4) {
+        stopScrolling('complete');
+        return;
+      }
+      if (scrollCount >= MAX_SCROLLS) {
+        stopScrolling('complete');
+        return;
+      }
+
       window.scrollBy({ top: window.innerHeight * 2, behavior: 'smooth' });
-    }, 1500);
+
+      // Send progress every scroll
+      chrome.runtime.sendMessage({
+        type: 'SCROLL_STATUS',
+        status: 'collecting',
+        count: lastPostCount,
+        scrollCount,
+        noNewDataCount: sameHeightCount
+      }).catch(() => {});
+
+    }, 2000);
 
     chrome.runtime.sendMessage({
       type: 'SCROLL_STATUS',

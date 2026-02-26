@@ -39,14 +39,19 @@
 
     const timestamp = getTimestamp(obj);
 
+    const views = obj.play_count || obj.video_play_count || obj.video_view_count || obj.view_count || 0;
+    const likes = obj.edge_media_preview_like?.count ?? obj.edge_liked_by?.count ?? obj.like_count ?? 0;
+    const comments = obj.edge_media_to_comment?.count ?? obj.edge_media_to_parent_comment?.count ?? obj.comment_count ?? 0;
+
     return {
       shortcode,
       timestamp: timestamp || Math.floor(Date.now() / 1000),
-      views: obj.play_count || obj.video_play_count || obj.video_view_count || obj.view_count || 0,
-      likes: obj.edge_media_preview_like?.count ?? obj.edge_liked_by?.count ?? obj.like_count ?? 0,
-      comments: obj.edge_media_to_comment?.count ?? obj.edge_media_to_parent_comment?.count ?? obj.comment_count ?? 0,
-      caption: obj.edge_media_to_caption?.edges?.[0]?.node?.text || obj.caption?.text || (typeof obj.caption === 'string' ? obj.caption : '') || '',
-      thumbnail: obj.display_url || obj.thumbnail_url || obj.image_versions2?.candidates?.[0]?.url || obj.carousel_media?.[0]?.image_versions2?.candidates?.[0]?.url || '',
+      views,
+      likes,
+      comments,
+      caption: obj.edge_media_to_caption?.edges?.[0]?.node?.text || obj.caption?.text || obj.caption_text || (typeof obj.caption === 'string' ? obj.caption : '') || '',
+      thumbnail: obj.display_url || obj.thumbnail_url || obj.thumbnail_src || obj.media_preview_url || obj.image_versions2?.candidates?.[0]?.url || obj.carousel_media?.[0]?.image_versions2?.candidates?.[0]?.url || '',
+      engagementRate: views > 0 ? (likes + comments) / views : 0,
       isVideo: obj.is_video ?? (obj.media_type === 2) ?? (obj.product_type === 'clips') ?? false,
       type: obj.product_type || (obj.is_video ? 'clips' : (obj.media_type === 2 ? 'clips' : 'feed')),
       url: `https://www.instagram.com/reel/${shortcode}/`

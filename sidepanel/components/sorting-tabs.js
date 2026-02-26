@@ -5,6 +5,7 @@ const SortingTabs = (() => {
     { key: 'views', label: 'Views' },
     { key: 'likes', label: 'Likes' },
     { key: 'comments', label: 'Comentários' },
+    { key: 'engagementRate', label: 'ER%' },
     { key: 'date', label: 'Data' }
   ];
 

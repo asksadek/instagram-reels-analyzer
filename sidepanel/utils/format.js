@@ -46,5 +46,10 @@ const Format = (() => {
     return (n * 100).toFixed(1).replace('.', ',') + '%';
   }
 
-  return { number, compact, date, dateTime, ago, score, percent };
+  function er(rate) {
+    if (rate == null) return '\u2014';
+    return (rate * 100).toFixed(2).replace('.', ',') + '%';
+  }
+
+  return { number, compact, date, dateTime, ago, score, percent, er };
 })();
