@@ -48,16 +48,7 @@
     let scrollCount = 0;
     const MAX_SCROLLS = 300;
 
-    // Navigate to profile's Reels tab if on profile root
-    const profileMatch = window.location.pathname.match(/^\/([^/]+)\/?$/);
-    if (profileMatch) {
-      const username = profileMatch[1];
-      const reelsTab = document.querySelector(`a[href="/${username}/reels/"]`);
-      if (reelsTab) {
-        console.log(`[IG Analyzer CS] Clicking reels tab for ${username}`);
-        reelsTab.click();
-      }
-    }
+    console.log(`[IG Analyzer CS] Starting scroll on ${window.location.pathname}`);
 
     scrollInterval = setInterval(() => {
       if (!scrolling) return;
