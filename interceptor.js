@@ -1,5 +1,4 @@
 // Instagram Reels Analyzer — MAIN World Interceptor
-// Intercepts ALL fetch/XHR to find Instagram media data.
 
 (function() {
   'use strict';
@@ -7,22 +6,40 @@
   const CHANNEL = 'IG_REELS_ANALYZER';
   let totalSent = 0;
 
+  /**
+   * Try to get a timestamp from any possible Instagram field name.
+   */
+  function getTimestamp(obj) {
+    // Direct fields
+    if (obj.taken_at_timestamp) return obj.taken_at_timestamp;
+    if (obj.taken_at) return obj.taken_at;
+    if (obj.device_timestamp) return Math.floor(obj.device_timestamp / (obj.device_timestamp > 1e12 ? 1000 : 1));
+    if (obj.creation_time) return obj.creation_time;
+    // Caption timestamp
+    if (obj.caption?.created_at) return obj.caption.created_at;
+    if (obj.caption?.created_at_utc) return obj.caption.created_at_utc;
+    return 0;
+  }
+
   function normalizePost(obj) {
     const shortcode = obj.shortcode || obj.code;
-    const timestamp = obj.taken_at_timestamp || obj.taken_at;
-    if (!shortcode || !timestamp) return null;
+    if (!shortcode) return null;
+
+    const timestamp = getTimestamp(obj);
 
     return {
       shortcode,
-      timestamp,
+      timestamp: timestamp || Math.floor(Date.now() / 1000), // fallback to now
       views: obj.video_view_count || obj.play_count || obj.video_play_count || obj.view_count || 0,
       likes: obj.edge_media_preview_like?.count ?? obj.edge_liked_by?.count ?? obj.like_count ?? 0,
       comments: obj.edge_media_to_comment?.count ?? obj.edge_media_to_parent_comment?.count ?? obj.comment_count ?? 0,
       caption: obj.edge_media_to_caption?.edges?.[0]?.node?.text || obj.caption?.text || (typeof obj.caption === 'string' ? obj.caption : '') || '',
-      thumbnail: obj.display_url || obj.thumbnail_url || obj.image_versions2?.candidates?.[0]?.url || '',
-      isVideo: obj.is_video ?? (obj.media_type === 2) ?? false,
+      thumbnail: obj.display_url || obj.thumbnail_url || obj.image_versions2?.candidates?.[0]?.url || obj.carousel_media?.[0]?.image_versions2?.candidates?.[0]?.url || '',
+      isVideo: obj.is_video ?? (obj.media_type === 2) ?? (obj.product_type === 'clips') ?? false,
       type: obj.product_type || (obj.is_video ? 'clips' : (obj.media_type === 2 ? 'clips' : 'feed')),
-      url: `https://www.instagram.com/p/${shortcode}/`
+      url: `https://www.instagram.com/reel/${shortcode}/`,
+      _hasTimestamp: timestamp > 0,
+      _keys: Object.keys(obj).slice(0, 20).join(',') // debug: show available keys
     };
   }
 
@@ -31,13 +48,13 @@
     const seen = new Set();
 
     function traverse(obj, depth) {
-      if (!obj || typeof obj !== 'object' || depth > 20) return;
+      if (!obj || typeof obj !== 'object' || depth > 25) return;
 
       const post = normalizePost(obj);
       if (post && !seen.has(post.shortcode)) {
         seen.add(post.shortcode);
         posts.push(post);
-        return;
+        // DON'T return — keep traversing children in case there are nested media
       }
 
       if (Array.isArray(obj)) {
@@ -57,7 +74,9 @@
   function relay(posts, source) {
     if (posts.length === 0) return;
     totalSent += posts.length;
-    console.log(`[IG Analyzer] ✓ ${posts.length} posts from ${source} (total: ${totalSent})`);
+    // Log first post keys for debugging
+    const sample = posts[0];
+    console.log(`[IG Analyzer] ✓ ${posts.length} posts from ${source} (total: ${totalSent}) | hasTimestamp=${sample._hasTimestamp} views=${sample.views} keys=${sample._keys}`);
     window.postMessage({ channel: CHANNEL, type: 'POSTS_DATA', posts }, '*');
   }
 
@@ -67,18 +86,10 @@
       const posts = extractPosts(data);
       if (posts.length > 0) {
         relay(posts, source);
-      } else {
-        // Log structure so we can see what Instagram returns
-        const topKeys = Object.keys(data).join(',');
-        const dataKeys = data.data ? Object.keys(data.data).join(',') : '-';
-        // Find any arrays with objects that have 'code' or 'shortcode' or 'media'
-        const sample = JSON.stringify(data).substring(0, 300);
-        console.log(`[IG Analyzer] 0 posts | ${source} | top:[${topKeys}] data:[${dataKeys}] sample:${sample}`);
       }
     } catch(e) {}
   }
 
-  // Helper: get URL string from any fetch input
   function getUrl(input) {
     if (typeof input === 'string') return input;
     if (input instanceof Request) return input.url;
@@ -86,27 +97,25 @@
     return '';
   }
 
+  // Check if URL is worth intercepting
+  function shouldIntercept(url) {
+    if (!url) return false;
+    return url.includes('graphql') || url.includes('/api/') || url.includes('query') ||
+           url.includes('feed') || url.includes('clips') || url.includes('reels') ||
+           url.includes('media') || url.includes('user');
+  }
+
   // --- Override fetch() ---
   const origFetch = window.fetch;
   window.fetch = async function(input, init) {
     const url = getUrl(input);
     const response = await origFetch.apply(this, arguments);
-
     try {
-      // Log ALL instagram API calls for debugging
-      if (url.includes('graphql') || url.includes('/api/') || url.includes('query')) {
-        console.log(`[IG Analyzer] FETCH ${response.status} ${(init?.method || 'GET')} ${url.substring(0, 120)}`);
-      }
-
-      // Try to extract posts from ANY instagram API response
-      if (url.includes('instagram.com') || url.startsWith('/')) {
-        if (url.includes('graphql') || url.includes('/api/') || url.includes('query') || url.includes('feed') || url.includes('clips') || url.includes('reels') || url.includes('media') || url.includes('user')) {
-          const clone = response.clone();
-          clone.text().then(text => tryParse(text, url.substring(0, 80))).catch(() => {});
-        }
+      if (shouldIntercept(url)) {
+        const clone = response.clone();
+        clone.text().then(text => tryParse(text, 'fetch:' + url.substring(0, 60))).catch(() => {});
       }
     } catch(e) {}
-
     return response;
   };
 
@@ -123,14 +132,13 @@
 
   XHR.send = function() {
     const url = this._igUrl;
-    if (url && (url.includes('graphql') || url.includes('/api/') || url.includes('query') || url.includes('feed') || url.includes('clips') || url.includes('reels') || url.includes('media'))) {
-      console.log(`[IG Analyzer] XHR ${this._igMethod} ${url.substring(0, 120)}`);
+    if (shouldIntercept(url)) {
       this.addEventListener('load', function() {
-        try { tryParse(this.responseText, url.substring(0, 80)); } catch(e) {}
+        try { tryParse(this.responseText, 'xhr:' + url.substring(0, 60)); } catch(e) {}
       });
     }
     return origSend.apply(this, arguments);
   };
 
-  console.log('[IG Analyzer] ✓ Interceptor active — monitoring all fetch/XHR');
+  console.log('[IG Analyzer] ✓ Interceptor v3 active');
 })();
