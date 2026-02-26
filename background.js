@@ -1,6 +1,6 @@
 // Instagram Reels Analyzer — Background Service Worker
 
-// Register MAIN world script to intercept Instagram API responses
+// Register MAIN world interceptor
 chrome.runtime.onInstalled.addListener(() => {
   chrome.scripting.registerContentScripts([{
     id: "ig-interceptor",
@@ -8,7 +8,16 @@ chrome.runtime.onInstalled.addListener(() => {
     js: ["interceptor.js"],
     world: "MAIN",
     runAt: "document_start"
-  }]);
+  }]).catch(err => {
+    // Already registered — update it
+    chrome.scripting.updateContentScripts([{
+      id: "ig-interceptor",
+      matches: ["https://www.instagram.com/*"],
+      js: ["interceptor.js"],
+      world: "MAIN",
+      runAt: "document_start"
+    }]).catch(() => {});
+  });
 });
 
 // Open side panel on extension icon click
@@ -16,61 +25,63 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
-// In-memory store of collected posts, keyed by tab ID
+// In-memory store keyed by tab ID
 let collectedPosts = {};
 
-// Message routing between content script, interceptor, and side panel
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const tabId = sender.tab?.id || msg.tabId;
+
   if (msg.type === "POSTS_DATA") {
-    // Incoming post data from content script (bridged from MAIN world interceptor)
-    const tabId = sender.tab?.id;
-    if (!tabId) {
-      sendResponse({ ok: false, error: "No tab ID" });
-      return true;
-    }
+    if (!tabId) { sendResponse({ ok: false }); return true; }
 
     if (!collectedPosts[tabId]) collectedPosts[tabId] = {};
 
-    // Merge new posts with existing, deduplicating by shortcode
-    for (const post of msg.posts) {
-      collectedPosts[tabId][post.shortcode] = post;
+    let added = 0;
+    for (const post of (msg.posts || [])) {
+      if (post.shortcode && !collectedPosts[tabId][post.shortcode]) {
+        collectedPosts[tabId][post.shortcode] = post;
+        added++;
+      } else if (post.shortcode) {
+        // Update existing with any new data
+        Object.assign(collectedPosts[tabId][post.shortcode], post);
+      }
     }
 
     const totalCount = Object.keys(collectedPosts[tabId]).length;
+    console.log(`[IG Analyzer BG] Stored ${added} new posts (total: ${totalCount}) from tab ${tabId}`);
 
-    // Forward updated post list to side panel
+    // Forward to side panel
     chrome.runtime.sendMessage({
       type: "POSTS_UPDATE",
-      posts: Object.values(collectedPosts[tabId])
+      posts: Object.values(collectedPosts[tabId]),
+      tabId
     }).catch(() => {});
 
     sendResponse({ ok: true, count: totalCount });
   }
   else if (msg.type === "GET_POSTS") {
-    // Side panel requesting current collected data
-    const tabId = msg.tabId;
-    sendResponse({ posts: Object.values(collectedPosts[tabId] || {}) });
+    const posts = Object.values(collectedPosts[msg.tabId] || {});
+    console.log(`[IG Analyzer BG] GET_POSTS for tab ${msg.tabId}: ${posts.length} posts`);
+    sendResponse({ posts });
   }
   else if (msg.type === "CLEAR_POSTS") {
-    // Side panel requesting to clear all collected data for a tab
-    const tabId = msg.tabId;
-    collectedPosts[tabId] = {};
+    collectedPosts[msg.tabId] = {};
     sendResponse({ ok: true });
   }
   else if (msg.type === "START_SCROLL" || msg.type === "STOP_SCROLL") {
-    // Forward scroll commands from side panel to the content script in the active tab
-    chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
+    console.log(`[IG Analyzer BG] Forwarding ${msg.type} to tab ${msg.tabId}`);
+    chrome.tabs.sendMessage(msg.tabId, msg).catch(err => {
+      console.error(`[IG Analyzer BG] Failed to send to tab:`, err);
+    });
     sendResponse({ ok: true });
   }
   else if (msg.type === "SCROLL_STATUS") {
-    // Forward scroll status from content script to side panel
     chrome.runtime.sendMessage(msg).catch(() => {});
   }
 
-  return true; // Keep message channel open for async sendResponse
+  return true;
 });
 
-// Clean up stored data when a tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   delete collectedPosts[tabId];
 });

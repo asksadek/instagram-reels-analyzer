@@ -1,7 +1,5 @@
 // Instagram Reels Analyzer — Content Script (ISOLATED World)
-// Bridges messages from the MAIN world interceptor (via postMessage)
-// to the background service worker (via chrome.runtime.sendMessage).
-// Also handles auto-scroll functionality for collecting post data.
+// Bridges MAIN world → background, handles auto-scroll.
 
 (function() {
   'use strict';
@@ -12,40 +10,50 @@
   let noNewDataCount = 0;
   let lastPostCount = 0;
 
-  // --- Bridge: MAIN world postMessage → chrome.runtime background ---
+  console.log('[IG Analyzer CS] Content script loaded');
+
+  // --- Bridge: MAIN world postMessage → background ---
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.channel !== CHANNEL) return;
 
+    console.log(`[IG Analyzer CS] Received ${event.data.type} with ${event.data.posts?.length || 0} posts from interceptor`);
+
     chrome.runtime.sendMessage(event.data).then(response => {
-      if (response && scrolling) {
+      console.log(`[IG Analyzer CS] Background response:`, response);
+
+      if (response) {
         const currentCount = response.count || 0;
 
-        if (currentCount === lastPostCount) {
-          noNewDataCount++;
-        } else {
-          noNewDataCount = 0;
-          lastPostCount = currentCount;
-        }
+        // Always update scroll status if we're scrolling
+        if (scrolling) {
+          if (currentCount === lastPostCount) {
+            noNewDataCount++;
+          } else {
+            noNewDataCount = 0;
+            lastPostCount = currentCount;
+          }
 
-        // Send scroll progress update to side panel via background
-        chrome.runtime.sendMessage({
-          type: 'SCROLL_STATUS',
-          status: 'collecting',
-          count: currentCount,
-          noNewDataCount
-        }).catch(() => {});
+          chrome.runtime.sendMessage({
+            type: 'SCROLL_STATUS',
+            status: 'collecting',
+            count: currentCount,
+            noNewDataCount
+          }).catch(() => {});
 
-        // Auto-stop if no new data for 5 consecutive scroll cycles
-        if (noNewDataCount >= 5) {
-          stopScrolling('complete');
+          if (noNewDataCount >= 8) {
+            stopScrolling('complete');
+          }
         }
       }
-    }).catch(() => {});
+    }).catch(err => {
+      console.error('[IG Analyzer CS] Error sending to background:', err);
+    });
   });
 
-  // --- Listen for commands from background (forwarded from side panel) ---
+  // --- Commands from side panel ---
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    console.log(`[IG Analyzer CS] Received command: ${msg.type}`);
     if (msg.type === 'START_SCROLL') {
       startScrolling();
       sendResponse({ ok: true });
@@ -56,35 +64,30 @@
     return true;
   });
 
-  /**
-   * Starts the auto-scroll process.
-   * Optionally navigates to the Reels tab if available and not already there.
-   * Scrolls the page every 1.5 seconds to trigger Instagram to load more content.
-   */
   function startScrolling() {
     if (scrolling) return;
     scrolling = true;
     noNewDataCount = 0;
     lastPostCount = 0;
 
-    // Navigate to the profile's Reels tab if we're on a profile page
-    // Match only profile-specific reels links like /username/reels/
+    console.log('[IG Analyzer CS] Starting scroll on', window.location.pathname);
+
+    // Navigate to profile's Reels tab if on profile root
     const profileMatch = window.location.pathname.match(/^\/([^/]+)\/?$/);
     if (profileMatch) {
       const username = profileMatch[1];
       const reelsTab = document.querySelector(`a[href="/${username}/reels/"]`);
       if (reelsTab) {
+        console.log(`[IG Analyzer CS] Clicking reels tab for ${username}`);
         reelsTab.click();
       }
     }
 
-    // Scroll down by 2x viewport height every 1.5 seconds
     scrollInterval = setInterval(() => {
       if (!scrolling) return;
       window.scrollBy({ top: window.innerHeight * 2, behavior: 'smooth' });
     }, 1500);
 
-    // Notify side panel that scrolling has started
     chrome.runtime.sendMessage({
       type: 'SCROLL_STATUS',
       status: 'started',
@@ -92,18 +95,14 @@
     }).catch(() => {});
   }
 
-  /**
-   * Stops the auto-scroll process.
-   * @param {string} reason - 'complete' if auto-stopped, 'stopped' if manual
-   */
   function stopScrolling(reason) {
     scrolling = false;
     if (scrollInterval) {
       clearInterval(scrollInterval);
       scrollInterval = null;
     }
+    console.log(`[IG Analyzer CS] Stopped scrolling: ${reason}, collected ${lastPostCount} posts`);
 
-    // Notify side panel that scrolling has stopped
     chrome.runtime.sendMessage({
       type: 'SCROLL_STATUS',
       status: reason,
