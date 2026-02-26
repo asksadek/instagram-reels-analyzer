@@ -65,7 +65,16 @@
     try {
       const data = JSON.parse(text);
       const posts = extractPosts(data);
-      relay(posts, source);
+      if (posts.length > 0) {
+        relay(posts, source);
+      } else {
+        // Log structure so we can see what Instagram returns
+        const topKeys = Object.keys(data).join(',');
+        const dataKeys = data.data ? Object.keys(data.data).join(',') : '-';
+        // Find any arrays with objects that have 'code' or 'shortcode' or 'media'
+        const sample = JSON.stringify(data).substring(0, 300);
+        console.log(`[IG Analyzer] 0 posts | ${source} | top:[${topKeys}] data:[${dataKeys}] sample:${sample}`);
+      }
     } catch(e) {}
   }
 
